@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <iostream>
 #include "iree/base/api.h"
 #include "iree/base/internal/cpu.h"
 #include "iree/base/internal/flags.h"
@@ -583,9 +584,21 @@ static bool matmul_result_elements_agree(iree_e2e_test_value_t expected,
         iree_make_status(IREE_STATUS_INVALID_ARGUMENT, "mismatched types"));
     return false;
   }
+
+  // Negative tolerance is never satisfied: same behavior as numpy.allclose
+  if (FLAG_acceptable_fp_delta < 0.0f) {
+    iree_status_abort(
+        iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
+                         "negative tolerance (acceptable_fp_delta=%.8g)",
+                         FLAG_acceptable_fp_delta));
+    return false;
+  }
+
   switch (expected.type) {
-    case IREE_E2E_TEST_VALUE_TYPE_I32:
+    case IREE_E2E_TEST_VALUE_TYPE_I32:{
+                                        std::cout << "Comparing I32 values " << actual.i32 << " and " << expected.i32 << std::endl;
       return actual.i32 == expected.i32;
+                                      }
     // Since we fill buffers with small integers for floating point GEMMs
     // functional testing, we can test for bit-exactness on the actual and
     // expected values. Inexact results are only permitted when the
@@ -659,6 +672,8 @@ static void print_matrix(FILE* file, const char* label, precision_t precision,
                          iree_hal_element_type_t element_type,
                          const uint8_t* matrix, const uint8_t* other_matrix,
                          const char* highlight) {
+
+  std::cout << "In print_matrix" << std::endl;
   IREE_ASSERT((other_matrix == NULL) == (highlight == NULL));
   int max_elem_width =
       get_max_elem_width(precision, rows, row_start, row_end, cols, col_start,
@@ -750,6 +765,8 @@ static iree_status_t check_matmul_failure(FILE* file,
   // bit to avoid huge output.
   k_end = iree_min(k_end, k_start + 4 * context);
 
+  std::cout << "In check_matmul_failure about to print matrices" << std::endl;
+
   fprintf(file, "\n");
   print_matrix(file, "left-hand side", PRECISION_LOW, results->m, m_start,
                m_end, results->k, k_start, k_end, results->lhs_type,
@@ -786,6 +803,8 @@ static iree_status_t check_matmul_failure(FILE* file,
 static iree_status_t check_matmul_results_impl(FILE* file,
                                                const matmul_results_t* results,
                                                int check_every) {
+
+  std::cout << "In check_matmul_results_impl" << std::endl;
   IREE_TRACE_ZONE_BEGIN(z0);
 
   IREE_RETURN_AND_END_ZONE_IF_ERROR(
@@ -824,6 +843,8 @@ static iree_status_t check_matmul_results_impl(FILE* file,
 // On error, detailed logging is written to |file| if it is not NULL.
 static iree_status_t check_matmul_results(FILE* file,
                                           const matmul_results_t* results) {
+
+  std::cout << "In check_matmul_results" << std::endl;
   IREE_TRACE_ZONE_BEGIN(z0);
   int check_every = calculate_check_every(results->m, results->n);
   iree_status_t status = check_matmul_results_impl(file, results, check_every);
@@ -850,6 +871,8 @@ static iree_status_t check_matmul_results(FILE* file,
 // to |dst|.
 static void write_element(iree_hal_element_type_t element_type, int32_t value,
                           void* dst) {
+
+  std::cout << "In write_element" << std::endl;
 #define WRITE_ELEMENT_CASE(ETYPE, CTYPE) \
   case IREE_HAL_ELEMENT_TYPE_##ETYPE:    \
     *(CTYPE*)dst = (CTYPE)value;         \
@@ -901,6 +924,8 @@ static inline uint32_t pseudorandom_range(uint32_t* state, uint32_t range) {
 // Get minimum and maximum for integer-valued uniform distribution.
 static void get_min_max_for_element_type(iree_hal_element_type_t element_type,
                                          int32_t* min, int32_t* max) {
+
+  std::cout << "Setting main and max for element type" << std::endl;
   switch (element_type) {
     case IREE_HAL_ELEMENT_TYPE_INT_8:
     case IREE_HAL_ELEMENT_TYPE_SINT_8:
@@ -977,6 +1002,9 @@ class MatmulTestModuleState final {
   StatusOr<vm::ref<iree_hal_buffer_view_t>> GenerateRandomMatrix(
       const vm::ref<iree_hal_device_t> device, int64_t dim0, int64_t dim1,
       iree_hal_element_type_t element_type, int32_t seed) {
+ 
+
+    std::cout << "In GenerateRandomMatrix of class MatmulTestModuleState" << std::endl;
     iree_hal_dim_t dims[2] = {
         (iree_hal_dim_t)dim0,
         (iree_hal_dim_t)dim1,
@@ -1026,6 +1054,8 @@ class MatmulTestModuleState final {
       const vm::ref<iree_hal_buffer_view_t> rhs,
       const vm::ref<iree_hal_buffer_view_t> acc,
       const vm::ref<iree_hal_buffer_view_t> actual_result) {
+
+    std::cout << "In CheckMatmulResults of class MatmulTestModuleState" << std::endl;
     matmul_results_t results = {};
     IREE_RETURN_IF_ERROR(matmul_results_initialize(
         device.get(), (iree_hal_dim_t)m, (iree_hal_dim_t)k, (iree_hal_dim_t)n,
@@ -1061,6 +1091,8 @@ struct MatmulTestModule final : public vm::NativeModule<MatmulTestModuleState> {
 static iree_status_t matmul_test_module_create(iree_vm_instance_t* instance,
                                                iree_allocator_t host_allocator,
                                                iree_vm_module_t** out_module) {
+
+  std::cout << "In matmul_test_module_create" << std::endl;
   IREE_ASSERT_ARGUMENT(out_module);
   *out_module = NULL;
   auto module = std::make_unique<MatmulTestModule>(
@@ -1081,6 +1113,8 @@ static iree_status_t matmul_test_module_create(iree_vm_instance_t* instance,
 static iree_status_t check_test_function(iree_vm_function_t function,
                                          bool* out_is_valid) {
   *out_is_valid = true;
+
+  std::cout << "In check_test_function" << std::endl;
 
   iree_string_view_t function_name = iree_vm_function_name(&function);
   if (iree_string_view_starts_with(function_name,
@@ -1108,6 +1142,8 @@ static iree_status_t check_test_function(iree_vm_function_t function,
 static iree_status_t run_test_function(iree_vm_context_t* context,
                                        iree_vm_function_t function,
                                        iree_allocator_t host_allocator) {
+
+  std::cout << "In run_test_function" << std::endl;
   IREE_TRACE_ZONE_BEGIN(z0);
   iree_string_view_t function_name = iree_vm_function_name(&function);
   IREE_TRACE_ZONE_APPEND_TEXT(z0, function_name.data, function_name.size);
@@ -1130,6 +1166,8 @@ static iree_status_t run_all_test_functions(iree_vm_context_t* context,
                                             iree_vm_module_t* test_module,
                                             iree_allocator_t host_allocator) {
   IREE_TRACE_ZONE_BEGIN(z0);
+
+  std::cout << "In run_all_test_functions" << std::endl;
 
   // Walk all functions and find the ones we can run (no args, non-internal).
   const iree_vm_module_signature_t module_signature =
@@ -1182,6 +1220,8 @@ static iree_status_t check_module_requirements(iree_vm_module_t* module) {
 
 static iree_status_t load_and_run_e2e_tests(iree_allocator_t host_allocator) {
   IREE_TRACE_ZONE_BEGIN(z0);
+
+  std::cout << "In load_and_run_e2e_tests" << std::endl;
 
   iree_cpu_initialize(host_allocator);
 
@@ -1250,6 +1290,8 @@ static iree_status_t load_and_run_e2e_tests(iree_allocator_t host_allocator) {
 
 int main(int argc, char** argv) {
   IREE_TRACE_APP_ENTER();
+
+  std::cout << "In main function" << std::endl;
 
   iree_flags_parse_checked(IREE_FLAGS_PARSE_MODE_DEFAULT, &argc, &argv);
   if (argc != 1) {
