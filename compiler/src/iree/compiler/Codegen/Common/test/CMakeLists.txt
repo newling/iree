@@ -44,6 +44,7 @@ iree_lit_test_suite(
     "fold_affine_min_in_distributed_loops.mlir"
     "fold_affine_min_of_block_id.mlir"
     "fold_tensor_extract_op.mlir"
+    "foo_jammer.mlir"
     "forop_canonicalization.mlir"
     "generic_vectorization.mlir"
     "gpu_materialize_encoding_gfx1100.mlir"

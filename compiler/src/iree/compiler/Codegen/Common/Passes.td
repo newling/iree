@@ -34,6 +34,14 @@ def BubbleUpOrdinalOpsPass : Pass<"iree-codegen-bubble-up-ordinal-ops", ""> {
   }];
 }
 
+def FooJammerPass : Pass<"iree-codegen-foo-jammer", ""> {
+  let summary = "TODO(newling)";
+  let description = [{  }];
+  let options = [
+    Option<"jamFlavor", "jam-flavor", "int", /*default=*/"700", "What flavour kind?">
+  ];
+}
+
 def BufferizeCopyOnlyDispatchesPass :
   InterfacePass<"iree-codegen-bufferize-copy-only-dispatches", "mlir::FunctionOpInterface"> {
   let summary =
