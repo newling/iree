@@ -108,6 +108,7 @@ iree_cc_library(
     "FoldAffineMinInDistributedLoops.cpp"
     "FoldTensorExtractOpPass.cpp"
     "FoldTensorSubsetIntoVectorTransferOps.cpp"
+    "UnrollThreadwiseVectors.cpp"
     "ForOpCanonicalizationPass.cpp"
     "FuseTensorPadWithConsumer.cpp"
     "GenericVectorization.cpp"

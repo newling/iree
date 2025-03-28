@@ -23,6 +23,7 @@ iree_lit_test_suite(
             "batch_matmuls.mlir",
             "block_dynamic_dims.mlir",
             "bubble_up_ordinal_ops.mlir",
+            "foo_jammer.mlir",
             "bufferize_copy_only_dispatches.mlir",
             "canonicalize_interface_load_store.mlir",
             "convert_accgemm_to_gemm.mlir",

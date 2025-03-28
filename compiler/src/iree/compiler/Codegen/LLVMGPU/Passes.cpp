@@ -1071,6 +1071,8 @@ addLowerAndOptimizeAddressComputationPasses(FunctionLikeNest &funcPassManager) {
 
 static void addLowerToLLVMGPUPasses(OpPassManager &modulePassManager,
                                     bool forROCDL) {
+
+
   modulePassManager.addPass(
       createConvertHALDescriptorTypeToGPUAddressSpacePass());
   modulePassManager.addPass(createCanonicalizerPass());
@@ -1102,7 +1104,14 @@ static void addLowerToLLVMGPUPasses(OpPassManager &modulePassManager,
   modulePassManager.addPass(createIREEBufferizeConstantsPass());
 
   FunctionLikeNest funcPassManager(modulePassManager);
+
+  // auto foo = createLLVMGPUVectorLoweringPass();
+  // auto bar = createUnrollThreadwiseVectorsPass();
   funcPassManager.addPass(createFoldTensorExtractOpPass)
+
+
+      // I think I will add the new pass here. 
+      .addPass(createUnrollThreadwiseVectorsPass)
       .addPass(createLLVMGPUVectorLoweringPass)
       .addPass(createExpandGPUOpsPass);
 
