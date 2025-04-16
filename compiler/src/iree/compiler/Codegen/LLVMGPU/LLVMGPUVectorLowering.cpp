@@ -4,6 +4,7 @@
 // See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
+#include "iree/compiler/Codegen/Common/Passes.h"
 #include "iree/compiler/Codegen/LLVMGPU/Passes.h"
 #include "mlir/Conversion/VectorToSCF/VectorToSCF.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
@@ -153,6 +154,8 @@ struct LLVMGPUVectorLoweringPass final
 
     MLIRContext *context = funcOp.getContext();
 
+    bool printIntermediate = false;
+
     // Remove permutation_map, replace with explict broadcast and transpose ops
     // (which we immediately try to canonicalize away).
     {
@@ -206,10 +209,38 @@ struct LLVMGPUVectorLoweringPass final
     // Canonicalize.
     {
       RewritePatternSet patterns(context);
+      vector::populateCastAwayVectorLeadingOneDimPatterns(patterns);
       addVectorCanonicalizationPatterns(patterns);
       if (failed(applyPatternsGreedily(funcOp, std::move(patterns)))) {
         return signalPassFailure();
       }
+    }
+
+    // Flatten!
+    {
+      RewritePatternSet patterns(context);
+      GreedyRewriteConfig config;
+      config.fold = false;
+      populateFlattenVectorExtractInsertPatterns(patterns);
+      populateForOpInductionVarShapePatterns(patterns);
+      if (failed(applyPatternsGreedily(funcOp, std::move(patterns), config))) {
+        return signalPassFailure();
+      }
+    }
+
+    // Canonicalize.
+    {
+      RewritePatternSet patterns(context);
+      addVectorCanonicalizationPatterns(patterns);
+      if (failed(applyPatternsGreedily(funcOp, std::move(patterns)))) {
+        return signalPassFailure();
+      }
+    }
+
+    if (printIntermediate) {
+      // Print the function
+      llvm::errs() << "\n\nJust after flattening" << "\n";
+      llvm::errs() << funcOp << "\n\n\n";
     }
 
     // Less desirable unrolls, delayed till here in case previous

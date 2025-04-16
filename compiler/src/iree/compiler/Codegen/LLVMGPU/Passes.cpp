@@ -1099,6 +1099,8 @@ static void addLowerToLLVMGPUPasses(OpPassManager &modulePassManager,
 
   funcPassManager.addPass(createFoldTensorExtractOpPass)
       .addPass(createLLVMGPUVectorLoweringPass)
+      .addPass(createCanonicalizerPass)
+      .addPass(createCSEPass)
       .addPass(createExpandGPUOpsPass);
 
   // This pass needs to run before SCF -> CF.
