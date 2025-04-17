@@ -221,14 +221,14 @@ bool isStrideless(VectorType inputType, VectorType resultType) {
   return true;
 }
 
-int64_t getGlobalOffset(ArrayAttr offsets, VectorType resultType) {
+int64_t getGlobalOffset(ArrayAttr offsets, VectorType type) {
 
   assert(offsets && "Expected offsets to be non-null");
 
   int64_t globalOffset = 0;
   int64_t stride = 1;
-  for (int i = resultType.getRank() - 1; i >= 0; --i) {
-    auto dimSize = resultType.getDimSize(i);
+  for (int i = type.getRank() - 1; i >= 0; --i) {
+    auto dimSize = type.getDimSize(i);
     if (dimSize > 1) {
       Attribute offset = offsets[i];
       assert(isa<IntegerAttr>(offset) && "Expected IntegerAttr");
@@ -307,7 +307,7 @@ class FlattenExtractStridedSliceOp final
       return failure();
     }
 
-    int64_t globalOffset = getGlobalOffset(extractOp.getOffsets(), resultType);
+    int64_t globalOffset = getGlobalOffset(extractOp.getOffsets(), inputType);
 
     VectorType flatInputType = VectorType::get({inputType.getNumElements()},
                                                inputType.getElementType());
@@ -352,12 +352,28 @@ struct TestFlattenVectorExtractInsertPass final
   }
 };
 
+struct TransposeToShapeCast final
+    : public OpRewritePattern<vector::TransposeOp> {
+  using OpRewritePattern::OpRewritePattern;
+  LogicalResult matchAndRewrite(vector::TransposeOp transposeOp,
+                                PatternRewriter &rewriter) const override {
+    // TODO.
+    return success();
+  }
+
 } // namespace
 
+
+void populateConvertToShapeCastPatterns(
+    RewritePatternSet &patterns, PatternBenefit benefit = 1) {
+  patterns.insert<TransposeToShapeCast>(patterns.getContext(), benefit);
+}
+
+// These patterns bla
 void populateFlattenVectorExtractInsertPatterns(RewritePatternSet &patterns,
                                                 PatternBenefit benefit) {
-  // TODO(newling) Consider adding patterns for maximally reducing the ranks of
-  // vector.insert_strided_slice and vector.extract_strided_slice ops.
+
+  populateConvertToShapeCastPatterns(patterns, benefit);
   patterns.insert<ConvertExtractOpToRankOneOp, ConvertInsertOpToRankOneOp,
                   FlattenExtractStridedSliceOp, FlattenInsertStridedSliceOp>(
       patterns.getContext(), benefit);

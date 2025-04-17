@@ -4,6 +4,7 @@
 // See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
+#include <algorithm>
 #include "iree/compiler/Codegen/Common/Passes.h"
 #include "iree/compiler/Codegen/LLVMGPU/Passes.h"
 #include "mlir/Conversion/VectorToSCF/VectorToSCF.h"
@@ -104,13 +105,168 @@ SmallVector<int64_t> getWithLeadingOnes(VectorType vectorType) {
   return nativeSize;
 }
 
+SmallVector<int64_t> getWithAllButOneOne(VectorType vectorType) {
+  auto rank = vectorType.getRank();
+  auto shape = vectorType.getShape();
+  auto iter = std::find_if_not(shape.rbegin(), shape.rend(),
+                               [](int64_t dim) { return dim == 1; });
+
+  SmallVector<int64_t> nativeSize(rank, 1);
+  if (iter != shape.rend()) {
+    // Found a non-1 dimension, so we can keep it.
+    nativeSize[rank - 1 - std::distance(shape.rbegin(), iter)] = *iter;
+  }
+  return nativeSize;
+}
+
+// A pattern that matches on all elements that have
+// `hasElementwiseMappableTraits`, and if there are any size-1 dimensions
+// in the result (and inputs), it flattens the inputs with shape_cast
+// operations, performs the elementwise operation on the squeezed inputs,
+// the uses shape_cast to return to the original shape.
+
+static Operation *cloneOpWithOperandsAndTypes(OpBuilder &builder, Location loc,
+                                              Operation *op,
+                                              ArrayRef<Value> operands,
+                                              ArrayRef<Type> resultTypes) {
+  return builder.create(loc, op->getName().getIdentifier(), operands,
+                        resultTypes, op->getAttrs());
+}
+
+struct SqueezeElementwise : public RewritePattern {
+
+  SqueezeElementwise(MLIRContext *context, PatternBenefit benefit = 1)
+      : RewritePattern(MatchAnyOpTypeTag(), benefit, context) {}
+
+  LogicalResult matchAndRewrite(Operation *op,
+                                PatternRewriter &rewriter) const override {
+    if (!OpTrait::hasElementwiseMappableTraits(op)) {
+      return failure();
+    }
+    if (op->getNumResults() != 1) {
+      return failure();
+    }
+    auto resultType = dyn_cast<VectorType>(op->getResultTypes()[0]);
+    if (!resultType) {
+      return failure();
+    }
+
+    ArrayRef<int64_t> shape = resultType.getShape();
+    int64_t nOnes{0};
+    for (int64_t dim : shape) {
+      if (dim == 1) {
+        nOnes++;
+      }
+    }
+
+    if (nOnes == 0) {
+      return failure();
+    }
+
+    SmallVector<int64_t> newShape;
+    newShape.reserve(shape.size() - nOnes);
+
+    for (int64_t dim : shape) {
+      if (dim != 1) {
+        newShape.push_back(dim);
+      }
+    }
+
+    SmallVector<Value> newOperands;
+    newOperands.reserve(op->getNumOperands());
+
+    for (OpOperand &operand : op->getOpOperands()) {
+      auto oldVecType = dyn_cast<VectorType>(operand.get().getType());
+      if (!oldVecType) {
+        newOperands.push_back(operand.get());
+      } else {
+        assert(oldVecType.getShape() == shape &&
+               "operand shape must match result shape");
+        VectorType newOperandType =
+            VectorType::get(newShape, oldVecType.getElementType());
+        auto shapeCast = rewriter.create<vector::ShapeCastOp>(
+            op->getLoc(), newOperandType, operand.get());
+        newOperands.push_back(shapeCast);
+      }
+    }
+
+    VectorType newType = VectorType::get(newShape, resultType.getElementType());
+    auto newOp = cloneOpWithOperandsAndTypes(rewriter, op->getLoc(), op,
+                                             newOperands, newType);
+
+    // cast back up:
+    auto castBack = rewriter.create<vector::ShapeCastOp>(
+        op->getLoc(), resultType, newOp->getResult(0));
+
+    rewriter.replaceOp(op, castBack.getResult());
+    return success();
+  }
+};
+
+// Similar to the above pattern, but instead of reshaping to have no 1's in the
+// shape, this pattern completely flattens all vector operands, so that they are
+// all rank-1.
+struct ElementwiseToRankOne : public RewritePattern {
+  ElementwiseToRankOne(MLIRContext *context, PatternBenefit benefit = 1)
+      : RewritePattern(MatchAnyOpTypeTag(), benefit, context) {}
+
+  LogicalResult matchAndRewrite(Operation *op,
+                                PatternRewriter &rewriter) const override {
+    if (!OpTrait::hasElementwiseMappableTraits(op)) {
+      return failure();
+    }
+    if (op->getNumResults() != 1) {
+      return failure();
+    }
+    auto resultType = dyn_cast<VectorType>(op->getResultTypes()[0]);
+    if (!resultType) {
+      return failure();
+    }
+    if (resultType.getRank() <= 1) {
+      return failure();
+    }
+
+    auto shape = resultType.getShape();
+    SmallVector<int64_t> newShape{resultType.getNumElements()};
+
+    SmallVector<Value> newOperands;
+    newOperands.reserve(op->getNumOperands());
+
+    for (OpOperand &operand : op->getOpOperands()) {
+      auto oldVecType = dyn_cast<VectorType>(operand.get().getType());
+      if (!oldVecType) {
+        newOperands.push_back(operand.get());
+      } else {
+        assert(oldVecType.getShape() == shape &&
+               "operand shape must match result shape");
+        VectorType newOperandType =
+            VectorType::get(newShape, oldVecType.getElementType());
+        auto shapeCast = rewriter.create<vector::ShapeCastOp>(
+            op->getLoc(), newOperandType, operand.get());
+        newOperands.push_back(shapeCast);
+      }
+    }
+
+    VectorType newType = VectorType::get(newShape, resultType.getElementType());
+    auto newOp = cloneOpWithOperandsAndTypes(rewriter, op->getLoc(), op,
+                                             newOperands, newType);
+
+    // cast back up:
+    auto castBack = rewriter.create<vector::ShapeCastOp>(
+        op->getLoc(), resultType, newOp->getResult(0));
+
+    rewriter.replaceOp(op, castBack.getResult());
+    return success();
+  }
+};
+
 std::optional<SmallVector<int64_t>> getNativeVectorShape(Operation *op) {
 
   // Example: elementwise operation `vector<10x4xf32> to vector<10x4xf16>`
   // will be unrolled to 10 elementwise operations on vectors of shape 1x4.
   if (OpTrait::hasElementwiseMappableTraits(op) && op->getNumResults() == 1) {
     if (auto vecType = llvm::dyn_cast<VectorType>(op->getResultTypes()[0])) {
-      return getWithLeadingOnes(vecType);
+      return getWithAllButOneOne(vecType);
     }
   }
 
@@ -154,18 +310,22 @@ struct LLVMGPUVectorLoweringPass final
 
     MLIRContext *context = funcOp.getContext();
 
-    bool printIntermediate = false;
-
     // Remove permutation_map, replace with explict broadcast and transpose ops
     // (which we immediately try to canonicalize away).
     {
       RewritePatternSet patterns(context);
+      // So far, squeeze is king.
+      // patterns.add<SqueezeElementwise>(context);
+      // patterns.add<ElementwiseToRankOne>(context);
       vector::populateVectorTransferPermutationMapLoweringPatterns(patterns);
       addVectorCanonicalizationPatterns(patterns);
       if (failed(applyPatternsGreedily(funcOp, std::move(patterns)))) {
         return signalPassFailure();
       }
     }
+
+    llvm::errs() << "\n\njust after squeezing" << "\n";
+    llvm::errs() << funcOp << "\n\n\n";
 
     // Conversions and unrolls.
     {
@@ -184,6 +344,7 @@ struct LLVMGPUVectorLoweringPass final
       vector::populateVectorMultiReductionLoweringPatterns(
           patterns, vector::VectorMultiReductionLowering::InnerParallel);
       // Remaining vector and other dialect ops have unrolling/lowering handled
+
       // by 'generic' vector unrolling.
       auto opts = vector::UnrollVectorOptions().setNativeShapeFn(
           [=](auto op) { return getNativeVectorShape(op); });
@@ -192,6 +353,23 @@ struct LLVMGPUVectorLoweringPass final
         return signalPassFailure();
       }
     }
+
+    //   llvm::errs() << "\n\njust before unrolling final" << "\n";
+    //   llvm::errs() << funcOp << "\n\n\n";
+
+    //   {
+
+    //     RewritePatternSet patterns(context);
+    //     // Remaining vector and other dialect ops have unrolling/lowering
+    //     handled
+    //     // by 'generic' vector unrolling.
+    //     auto opts = vector::UnrollVectorOptions().setNativeShapeFn(
+    //         [=](auto op) { return getNativeVectorShape(op); });
+    //     vector::populateVectorUnrollPatterns(patterns, opts);
+    //     if (failed(applyPatternsGreedily(funcOp, std::move(patterns)))) {
+    //       return signalPassFailure();
+    //     }
+    //   }
 
     // transfer_read -> load and transfer_write -> store.
     {
@@ -216,12 +394,32 @@ struct LLVMGPUVectorLoweringPass final
       }
     }
 
-    // Flatten!
+    // Print the function
+    llvm::errs() << "\n\nJust after unroll and canon" << "\n";
+    llvm::errs() << funcOp << "\n\n\n";
+
+    //    // Flatten!
     {
       RewritePatternSet patterns(context);
       GreedyRewriteConfig config;
       config.fold = false;
+
+      // TODO(newling) this is very clearly defined set of patterns --
+
+      // energy function that the patterns try to minimize is
+      // sum(operations in vector and arith dialects of) energy(op)
+      // - energy(shape_cast) = 0
+      // - energy(other_op) = sum of ranks of vector operands.
+
+      // IREE uses this as a late stage canonicaliazation before lowering to
+      // LLVM, only after unrolling of single-threaded code. Any pattern which
+      // decreases this object should be added. Any pattern that increases this
+      // objective should definitely not be added to avoid cycles. Any pattern
+      // that leaves the energy unchanged -- the energy function can be extended
+      // (lexicographically).
+
       populateFlattenVectorExtractInsertPatterns(patterns);
+      patterns.add<ElementwiseToRankOne>(context);
       populateForOpInductionVarShapePatterns(patterns);
       if (failed(applyPatternsGreedily(funcOp, std::move(patterns), config))) {
         return signalPassFailure();
@@ -237,10 +435,13 @@ struct LLVMGPUVectorLoweringPass final
       }
     }
 
-    if (printIntermediate) {
-      // Print the function
-      llvm::errs() << "\n\nJust after flattening" << "\n";
-      llvm::errs() << funcOp << "\n\n\n";
+    // Print the function
+    llvm::errs() << "\n\nJust after flatten and canon" << "\n";
+    llvm::errs() << funcOp << "\n\n\n";
+
+    if (failed(funcOp->getParentOfType<ModuleOp>().verify())) {
+      llvm::errs() << "Module verification failed after flattening\n";
+      return signalPassFailure();
     }
 
     // Less desirable unrolls, delayed till here in case previous
@@ -254,6 +455,9 @@ struct LLVMGPUVectorLoweringPass final
       }
     }
 
+    llvm::errs() << "\n\n\njust after shape cast lowering " << "\n";
+    llvm::errs() << funcOp << "\n\n\n";
+
     // Canonicalize.
     {
       RewritePatternSet patterns(context);
@@ -262,6 +466,9 @@ struct LLVMGPUVectorLoweringPass final
         return signalPassFailure();
       }
     }
+
+    llvm::errs() << "\n\n\njust after final canon " << "\n";
+    llvm::errs() << funcOp << "\n\n\n";
   }
 };
 } // namespace

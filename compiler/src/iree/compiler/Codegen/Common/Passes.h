@@ -125,6 +125,11 @@ void populateConcretizePadResultShapePatterns(
 void populateFlattenVectorExtractInsertPatterns(RewritePatternSet &,
                                                 PatternBenefit = 1);
 
+/// Patterns that convert operations that semantically equivalent to shape_cast,
+/// to shape_cast.
+void populateConvertToShapeCastPatterns(RewritePatternSet &,
+                                        PatternBenefit = 1);
+
 /// Populates `patterns` with patterns to fold `affine.min` ops in tiled and
 /// distributed loops.
 void populateFoldAffineMinInDistributedLoopsPatterns(
