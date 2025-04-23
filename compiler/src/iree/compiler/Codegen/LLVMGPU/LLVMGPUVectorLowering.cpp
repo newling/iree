@@ -121,17 +121,34 @@ struct LLVMGPUVectorLoweringPass final
       }
     }
 
-    RewritePatternSet vectorToLoopsPatterns(&getContext());
-    VectorTransferToSCFOptions vectorToSCFOptions;
-    vectorToSCFOptions.enableFullUnroll();
-    populateVectorToSCFConversionPatterns(vectorToLoopsPatterns,
-                                          vectorToSCFOptions);
-    memref::populateFoldMemRefAliasOpPatterns(vectorToLoopsPatterns);
-    amdgpu::populateAmdgpuTransferReadToLoadPatterns(vectorToLoopsPatterns);
-    vector::populateVectorTransferLoweringPatterns(vectorToLoopsPatterns);
-    if (failed(
-            applyPatternsGreedily(funcOp, std::move(vectorToLoopsPatterns)))) {
-      return signalPassFailure();
+    // Three sets of patterns for lowering transfer_read and transfer_write:
+    //
+    // (1) populateVectorToSCFConversionPatterns
+    //      ensures all transfer_read and transfer_write are on rank-1 vectors
+    // (2) populateAmdgpuTransferReadToLoadPatterns
+    //      lowers some rank-1 transfer_read (write) to vector.load (store)
+    // (3) populateVectorTransferLoweringPatterns
+    //      lowers some rank-1 transfer_read (write) to vector.load (store)
+    //
+    // (2) is the preferred lowering, so (2) is run in a pattern set before (3).
+    {
+      RewritePatternSet patterns(&getContext());
+      VectorTransferToSCFOptions vectorToSCFOptions;
+      vectorToSCFOptions.enableFullUnroll();
+      populateVectorToSCFConversionPatterns(patterns, vectorToSCFOptions);
+      amdgpu::populateAmdgpuTransferReadToLoadPatterns(patterns);
+      if (failed(applyPatternsGreedily(funcOp, std::move(patterns)))) {
+        return signalPassFailure();
+      }
+    }
+
+    {
+      RewritePatternSet patterns(&getContext());
+      memref::populateFoldMemRefAliasOpPatterns(patterns);
+      vector::populateVectorTransferLoweringPatterns(patterns);
+      if (failed(applyPatternsGreedily(funcOp, std::move(patterns)))) {
+        return signalPassFailure();
+      }
     }
   }
 };
