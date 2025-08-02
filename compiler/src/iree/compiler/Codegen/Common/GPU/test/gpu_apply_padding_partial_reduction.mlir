@@ -166,3 +166,24 @@ func.func @standard_inner_product_with_trunc(%arg0 : tensor<1x?xf32>, %arg1 : te
     } -> tensor<1xf16>
   return %0 : tensor<1xf16>
 }
+
+// -----
+
+
+#map = affine_map<(d0, d1) -> (d1, d0)>
+#map1 = affine_map<(d0, d1) -> (d0, d1)>
+#map2 = affine_map<(d0, d1) -> ()>
+
+func.func @multi_dim_reduction(%arg0 : tensor<?x?xf16>, %arg1 : tensor<?x?xf16>, %arg2 : tensor<f16>) -> tensor<f16> {
+  %0 = linalg.generic {indexing_maps = [#map, #map1, #map2],
+                       iterator_types = ["reduction", "reduction"]}
+                       ins(%arg0, %arg1 : tensor<?x?xf16>, tensor<?x?xf16>) outs(%arg2 : tensor<f16>)
+    attrs =  {lowering_config = #iree_gpu.lowering_config<{partial_reduction = [4096, 4096]}>}
+    {
+    ^bb0(%in: f16, %in_0: f16, %out: f16):
+      %1 = arith.mulf %in, %in_0 : f16
+      %2 = arith.addf %out, %1 : f16
+      linalg.yield %2 : f16
+    } -> tensor<f16>
+  return %0 : tensor<f16>
+}
