@@ -337,15 +337,10 @@ struct FoldMaskedTransferRAW : OpRewritePattern<vector::TransferReadOp> {
            "search `NOTE[FoldMaskedTransferRAW]` in "
            "GenericVectorization.cpp::FoldMaskedTransferRAW for information");
 
-    // Fold to the stored value if the padding value is poison
-    if (isa_and_present<ub::PoisonOp>(rPad.getDefiningOp())) {
-      rewriter.replaceOp(op, valToStore);
-      return success();
-    }
-
     // Materialize the padding with a constant.
     auto padVal = rewriter.create<vector::BroadcastOp>(
         rPad.getLoc(), valToStore.getType(), rPad);
+    // arith::SelectOp alreadt folds when poison, so this is enough.
     rewriter.replaceOpWithNewOp<arith::SelectOp>(op, wMask, valToStore, padVal);
     return success();
   }

@@ -16,6 +16,7 @@
 #include "mlir/Dialect/Linalg/IR/LinalgInterfaces.h"
 #include "mlir/Dialect/Linalg/Transforms/Transforms.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/Dialect/Utils/StructuredOpsUtils.h"
 #include "mlir/IR/Dominance.h"
@@ -59,12 +60,12 @@ getTiledOps(Operation *funcOp, IREE::GPU::TilingLevel tilingLevel) {
   return targets;
 }
 
-/// For each reduction dimension in the linalg operation `op`, determine a
-/// triplet:
+/// For each reduction dimension in the linalg operation `op`, get a tuple
+/// containing:
 ///
 /// 1) loop index of linalg op that's reduced,
 /// 2) an operand that is indexed by the reduction dimension,
-/// 3) operand dimension that's reduced.
+/// 3) dimension of operand that's reduced.
 ///
 /// Example:
 ///
@@ -79,10 +80,10 @@ getTiledOps(Operation *funcOp, IREE::GPU::TilingLevel tilingLevel) {
 ///                      outs(%arg2 : tensor<f16>)
 /// ```
 ///
-/// Above there are 2 reduction dimension, at loop indices 0 and 1.
-/// Both reduction dimensions are used by %arg0.
-/// Loop index 0 corresponds to operand dimension 1 of %arg0, and
-/// loop index 1 corresponds to operand dimension 0 of %arg0.
+/// The above operation has 2 reduction dimensions (d0 and d1).
+///
+/// d0 corresponds to operand dimension 1 of %arg0, and
+/// d1 corresponds to operand dimension 0 of %arg0.
 ///
 /// So [{0, %arg0, 1}, {1, %arg0, 0}] is returned.
 static SmallVector<std::tuple<unsigned, Value, unsigned>>
@@ -121,17 +122,21 @@ static LogicalResult applyPaddingLevel(RewriterBase &rewriter,
                                        IREE::GPU::TilingLevel tilingLevel) {
 
   // 1.a. Get padding values.
-  SmallVector<Attribute> paddingValues;
-  for (Value operand : tilingInterfaceOp.getOperation()->getOperands()) {
-    paddingValues.push_back(
-        rewriter.getZeroAttr(getElementTypeOrSelf(operand.getType())));
-  }
+  SmallVector<Attribute> paddingValues(
+      tilingInterfaceOp.getOperation()->getNumOperands(),
+      mlir::ub::PoisonAttr::get(rewriter.getContext()));
 
-  // 1.b. Special adjustment for OnlineAttention mask padding that needs to be
-  // mindful of softmax and pad to -inf.
-  // TODO: Extract into an upstream PaddingOpInterface.
+  // 1.b. Special adjustment for OnlineAttention mask padding.
+  // TODO: unify with poison approach.
   if (auto onlineAttentionOp = dyn_cast<IREE::LinalgExt::OnlineAttentionOp>(
           tilingInterfaceOp.getOperation())) {
+
+    //       paddingValues.clear();
+    //       for (Value operand :
+    //       tilingInterfaceOp.getOperation()->getOperands()) {
+    //         paddingValues.push_back(
+    //             rewriter.getZeroAttr(getElementTypeOrSelf(operand.getType())));
+    //       }
     TypedValue<ShapedType> mask = onlineAttentionOp.getMask();
     if (!mask) {
       tilingInterfaceOp.emitRemark(
@@ -176,15 +181,13 @@ static LogicalResult applyPaddingLevel(RewriterBase &rewriter,
              DBGS() << "--with padToMultipleOf: " << options.padToMultipleOf
                     << "\n");
 
-SmallVector<std::tuple<unsigned, Value, unsigned>> reductionDims;
+  SmallVector<std::tuple<unsigned, Value, unsigned>> reductionDims;
   auto linalgOp = dyn_cast<linalg::LinalgOp>(tilingInterfaceOp.getOperation());
   if (linalgOp) {
-  reductionDims = findReductionDims(linalgOp);
+    reductionDims = findReductionDims(linalgOp);
     // tilingInterfaceOp.emitWarning("expected linalg op");
     // return failure();
   }
-
-
 
   // 4. Pad.
   SmallVector<tensor::PadOp> padOps;
@@ -200,72 +203,73 @@ SmallVector<std::tuple<unsigned, Value, unsigned>> reductionDims;
 
   if (linalgOp) {
 
-  // Just before the new linalg operation, insert operations to get the
-  // reduction dimension sizes.
-  SmallVector<std::pair<unsigned, Value>> redDimSizes;
-  rewriter.setInsertionPoint(paddedOp.getOperation());
-  for (auto &&abc : reductionDims) {
-    auto [redDim, operand, redDimPos] = abc;
-    Value redDimSize =
-        rewriter.create<tensor::DimOp>(paddedOp.getLoc(), operand, redDimPos);
-    redDimSizes.push_back({redDim, redDimSize});
+    // Just before the new linalg operation, insert operations to get the
+    // reduction dimension sizes.
+    SmallVector<std::pair<unsigned, Value>> redDimSizes;
+    rewriter.setInsertionPoint(paddedOp.getOperation());
+    for (auto &&abc : reductionDims) {
+      auto [redDim, operand, redDimPos] = abc;
+      Value redDimSize =
+          rewriter.create<tensor::DimOp>(paddedOp.getLoc(), operand, redDimPos);
+      redDimSizes.push_back({redDim, redDimSize});
+    }
+
+    auto *block = cast<linalg::LinalgOp>(paddedOp.getOperation()).getBlock();
+    Operation *yield = block->getTerminator();
+    if (yield->getNumOperands() != 1) {
+      paddedOp.emitWarning("expected a single yield operand");
+      return failure();
+    }
+    Value yielded = yield->getOperand(0);
+    Operation *reduction = yielded.getDefiningOp();
+    if (!reduction) {
+      paddedOp.emitWarning("expected a reduction operation before yield");
+      return failure();
+    }
+    auto zero = arith::getNeutralElement(reduction);
+    if (!zero.has_value()) {
+      paddedOp.emitWarning("failed to get neutral element for reduction");
+      return failure();
+    }
+
+    rewriter.setInsertionPoint(reduction);
+    SmallVector<Value> conds;
+    for (auto &&[redDim, redDimSize] : redDimSizes) {
+      Value redDimIndex =
+          linalg::IndexOp::create(rewriter, paddedOp.getLoc(), redDim);
+      Value cond = arith::CmpIOp::create(rewriter, paddedOp.getLoc(),
+                                         arith::CmpIPredicate::ult, redDimIndex,
+                                         redDimSize);
+      conds.push_back(cond);
+    }
+
+    Value zeroValue =
+        rewriter.create<arith::ConstantOp>(paddedOp.getLoc(), zero.value());
+
+    // Merge the conds with andi operations.
+    assert(conds.size() > 0);
+    Value cond = conds[0];
+    for (unsigned i = 1; i < conds.size(); ++i) {
+      cond = arith::AndIOp::create(rewriter, paddedOp.getLoc(), cond, conds[i]);
+    }
+
+    // Find the reduction op operand that is the final block argument
+    if (reduction->getNumOperands() != 2) {
+      paddedOp.emitWarning("expected a reduction operation with 2 operands");
+      return failure();
+    }
+    Value carry = block->getArguments().back();
+    unsigned uncarryIndex = reduction->getOperand(0) == carry ? 1 : 0;
+    Value uncarried = reduction->getOperand(uncarryIndex);
+    Value selected = arith::SelectOp::create(rewriter, paddedOp.getLoc(), cond,
+                                             uncarried, zeroValue);
+
+    IRMapping mapping;
+    mapping.map(reduction->getOperand(uncarryIndex), selected);
+    auto redClone = rewriter.clone(*reduction, mapping);
+    rewriter.replaceOp(reduction, redClone);
   }
 
-  auto *block = cast<linalg::LinalgOp>(paddedOp.getOperation()).getBlock();
-  Operation *yield = block->getTerminator();
-  if (yield->getNumOperands() != 1){
-    paddedOp.emitWarning("expected a single yield operand");
-    return failure();
-  }
-  Value yielded = yield->getOperand(0);
-  Operation * reduction = yielded.getDefiningOp();
-  if (!reduction){
-    paddedOp.emitWarning("expected a reduction operation before yield");
-    return failure();
-  }
-  auto zero = arith::getNeutralElement(reduction);
-  if (!zero.has_value()){
-    paddedOp.emitWarning("failed to get neutral element for reduction");
-    return failure();
-  }
-
-  rewriter.setInsertionPoint(reduction);
-  SmallVector<Value> conds;
-  for (auto &&[redDim, redDimSize]: redDimSizes) {
-    Value redDimIndex =
-        linalg::IndexOp::create(rewriter, paddedOp.getLoc(), redDim);
-    Value cond = arith::CmpIOp::create(rewriter, paddedOp.getLoc(),
-                                       arith::CmpIPredicate::ult, redDimIndex,
-                                       redDimSize);
-    conds.push_back(cond);
-  }
-
-  Value zeroValue = rewriter.create<arith::ConstantOp>(paddedOp.getLoc(), zero.value());
-
-  // Merge the conds with andi operations.
-  assert(conds.size() > 0);
-  Value cond = conds[0];
-  for (unsigned i = 1; i < conds.size(); ++i) {
-    cond = arith::AndIOp::create(rewriter, paddedOp.getLoc(), cond, conds[i]);
-  }
-
-  // Find the reduction op operand that is the final block argument
-  if (reduction->getNumOperands() != 2){
-    paddedOp.emitWarning("expected a reduction operation with 2 operands");
-    return failure();
-  }
-  Value carry = block->getArguments().back();
-  unsigned uncarryIndex = reduction->getOperand(0) == carry ? 1 : 0;
-  Value uncarried = reduction->getOperand(uncarryIndex);
-  Value selected = arith::SelectOp::create(rewriter, paddedOp.getLoc(), cond,
-                                           uncarried, zeroValue);
-
-  IRMapping mapping;
-  mapping.map(reduction->getOperand(uncarryIndex), selected);
-  auto redClone = rewriter.clone(*reduction, mapping);
-  rewriter.replaceOp(reduction, redClone);
-}
-  
   // mapping.map(reduction->getOperand(1 - uncarryIndex), c
 
   // update reduction's first operand to be selected.
