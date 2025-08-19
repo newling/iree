@@ -21,4 +21,4 @@ OPTIMIZED_LL=${files[0]}
 
 
 # Get the llc changes:
-llc  -mtriple=amdgcn-amd-amdhsa -mcpu=gfx942  ${OPTIMIZED_LL} --print-changed=diff --debug-pass-manager  -o foo.s > llc_changes.s 2>&1
+$LLVM_BUILD/bin/llc  -mtriple=amdgcn-amd-amdhsa -mcpu=gfx942  ${OPTIMIZED_LL} --print-changed=diff --debug-pass-manager  -o second_run.s > llc_changes.s 2>&1
