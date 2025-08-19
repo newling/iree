@@ -8,7 +8,7 @@ set -euo pipefail
 #   and all files ending in .sh
 
 find . -maxdepth 1 -type f \
-  \( -name '*.mlir' -o -name '*.ll' -o -name '*.hsaco' -o -name '*.rocmasm' -o -name '*.vmfb' \) \
+  \( -name '*.s' -o  -name '*.mlir' -o -name '*.ll' -o -name '*.hsaco' -o -name '*.rocmasm' -o -name '*.vmfb' \) \
   ! -name 'input.mlir' \
   ! -name '*.sh' \
   -exec rm -v {} +
