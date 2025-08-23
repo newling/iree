@@ -1,37 +1,8 @@
 #include <hip/hip_runtime.h>
-#include <cstdlib>
+#include <algorithm>
 #include <iostream>
-
-/// This is based on llvm_ir_to_exectuble/main.hip although it does not do
-/// anything complicated. It is just an example of generating artefacts to
-/// peruse for better asm understanding
-///
-/// Two steps of compiling, one to generate the LLVM IR, second to generate
-/// assembly.
-///
-///  1) to generate LLVMIR:
-///  ```
-///  hipcc  -emit-llvm -S --offload-arch=gfx942 --std=c++17 main.hip
-///  ```
-///
-///  2) to generate assembly and executable:
-///  ```
-///  export OUTDIR=./funk
-///  mkdir $OUTDIR
-///  hipcc -save-temps=obj -g --offload-arch=gfx942 --std=c++17 main.hip -o
-///  $OUTDIR/main
-///  ```
-///  In the above, the use of the -g flag was suggested in
-///  https://rocm.blogs.amd.com/software-tools-optimization/amdgcn-isa/README.html
-///
-/// From scratch (untested)
-///
-/// git clone https://github.com/newling/rocm-examples.git
-/// cd rocm-examples
-/// cmake -S . -B build - G Ninja -DCMAKE_EXPORT_COMPILE_COMMANDS=1
-/// cmake --build build # probs not needed
-/// ln -s build/compile_commands.json .
-/// # change to this directory and run the compile commands above.
+#include <numeric>
+#include <vector>
 
 /// \brief Checks if the provided error code is \p hipSuccess and if not,
 /// prints an error message to the standard error output and terminates the
@@ -63,42 +34,106 @@ __global__ void matrix_transpose_kernel(float *out, const float *in) {
 
   // If not out of bounds, transpose element (x,y).
   if (x < Width && y < Width) {
+    // Store transposed element in shared memory.
     shared_matrix_memory[y * Width + x] = in[x * Width + y];
   }
 
+  // Syncronize threads so all writes are done before accessing shared memory
+  // again.
   __syncthreads();
 
   // If not out of bounds, transpose element (x,y).
   if (x < Width && y < Width) {
-    float loc = 0; // shared_matrix_memory[y * Width + x];
-
-    for (int i = 0; i < 4; ++i) {
-      for (int j = 0; j < 4; ++j) {
-        loc += shared_matrix_memory[y * Width + x + i + j];
-      }
-    }
-    out[y * Width + x] = loc;
+    // Copy transposed element from shared memory to global memory.
+    out[y * Width + x] = shared_matrix_memory[y * Width + x];
   }
 }
 
+// CPU implementation of matrix transpose.
+std::vector<float> expected_matrix_transpose(const std::vector<float> &input,
+                                             const unsigned int width) {
+  std::vector<float> output(width * width);
+  for (unsigned int j = 0; j < width; j++) {
+    for (unsigned int i = 0; i < width; i++) {
+      output[i * width + j] = input[j * width + i];
+    }
+  }
+  return output;
+}
+
 int main() {
-  float *d_in, *d_out;
-  size_t size_in_bytes = 1234;
-  HIP_CHECK(hipMalloc(&d_in, size_in_bytes));
-  HIP_CHECK(hipMalloc(&d_out, size_in_bytes));
+  // Number of rows and columns, total number of elements and size in bytes of
+  // the matrix to be transposed.
+  constexpr unsigned int width = 64;
+  constexpr unsigned int size = width * width;
+  constexpr unsigned int size_bytes = size * sizeof(float);
 
-  // Set the number of blocks per kernel grid.
-  constexpr unsigned int grid_size = 512;
-  // Set the number of threads per kernel block.
-  constexpr unsigned int threads_per_block = 256;
+  // Number of threads in each dimension of the kernel block.
+  constexpr unsigned int block_size = 4;
 
-  std::cout << "info: launch 'vector_square_kernel' kernel\n";
-  matrix_transpose_kernel<<<grid_size, threads_per_block, 0,
-                            hipStreamDefault>>>(d_out, d_in);
+  // Number of blocks in each dimension of the grid.
+  auto grid_size = width / block_size + (width % block_size != 0);
 
-  // Check that the kernel invocation was successful.
+  // Block and grid sizes in 2D.
+  const dim3 block_dim(block_size, block_size);
+  const dim3 grid_dim(grid_size, grid_size);
+
+  // Allocate host input matrix and initialize with increasing sequence 10, 20,
+  // 30, ....
+  std::vector<float> matrix(size);
+  std::iota(matrix.begin(), matrix.end(), 1.f);
+  std::for_each(matrix.begin(), matrix.end(), [](float &f) { f = 10.f * f; });
+
+  // Allocate matrix to store the results of the kernel execution.
+  std::vector<float> transposed_matrix(size);
+
+  // Allocate input and output matrices on device.
+  float *d_matrix{};
+  float *d_transposed_matrix{};
+  HIP_CHECK(hipMalloc(&d_matrix, size_bytes));
+  HIP_CHECK(hipMalloc(&d_transposed_matrix, size_bytes));
+
+  // Copy input matrix data from host to device.
+  HIP_CHECK(
+      hipMemcpy(d_matrix, matrix.data(), size_bytes, hipMemcpyHostToDevice));
+
+  // Print trace message.
+  std::cout << "Computing matrix transpose." << std::endl;
+
+  // Launch kernel on the default stream. Passing kernel arguments at the end of
+  // the
+  // <<<...>>> function call.
+  matrix_transpose_kernel<width><<<grid_dim, block_dim, 0, hipStreamDefault>>>(
+      d_transposed_matrix, d_matrix);
+
+  // Check if the kernel launch was successful.
   HIP_CHECK(hipGetLastError());
-  HIP_CHECK(hipFree(d_in));
-  HIP_CHECK(hipFree(d_out));
-  std::cout << "PASSED!\n";
+
+  // Copy results from device to host.
+  HIP_CHECK(hipMemcpy(transposed_matrix.data(), d_transposed_matrix, size_bytes,
+                      hipMemcpyDeviceToHost));
+
+  // Free device memory.
+  HIP_CHECK(hipFree(d_matrix));
+  HIP_CHECK(hipFree(d_transposed_matrix));
+
+  // Calculate expected transposed matrix with the CPU version of the kernel.
+  std::vector<float> expected_transposed_matrix =
+      expected_matrix_transpose(matrix, width);
+
+  // Validate results comparing with expected transposed matrix.
+  unsigned int errors = 0;
+  constexpr float eps = 1.0E-6f;
+  std::cout << "Validating transposed matrix." << std::endl;
+  for (unsigned int i = 0; i < size; i++) {
+    errors +=
+        (std::fabs(transposed_matrix[i] - expected_transposed_matrix[i]) > eps);
+  }
+
+  if (errors) {
+    std::cout << "Validation failed with " << errors << " errors." << std::endl;
+    return error_exit_code;
+  } else {
+    std::cout << "Validation passed." << std::endl;
+  }
 }
