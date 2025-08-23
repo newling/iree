@@ -12,4 +12,3 @@ find . -maxdepth 1 -type f \
   ! -name 'input.mlir' \
   ! -name '*.sh' \
   -exec rm -v {} +
-
