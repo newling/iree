@@ -1,4 +1,4 @@
-# This script generates a few files. 
+# This script generates a few files.
 
 #!/bin/bash
 set -ex
