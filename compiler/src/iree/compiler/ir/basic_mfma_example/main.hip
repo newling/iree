@@ -18,7 +18,7 @@
 
 using float4v = float __attribute__((__vector_size__(4 * sizeof(float))));
 
-/// Specifically target the mfma_f32_16x16x4f32 instruction, where thread mapping is 
+/// Specifically target the mfma_f32_16x16x4f32 instruction, where thread mapping is
 ///
 /// A: [[0, 16, 32, 48],
 ///     [1, 17, 33, 49],
@@ -53,7 +53,7 @@ static __global__ void mfma_test(const float *__restrict__ A,
   auto a_row_stride = 4;
   auto b_row_stride = 16;
   auto c_row_stride = 16;
-  
+
 
   // Accumulator (4 partials per lane). Start from zero.
   float4v d = {0.f, 0.f, 0.f, 0.f};
@@ -65,7 +65,7 @@ static __global__ void mfma_test(const float *__restrict__ A,
   // Second (and probably third) are closely related: abid and blgp.
   d = __builtin_amdgcn_mfma_f32_16x16x4f32(a, b, d, 0, 0, 0);
 
-  // Write back to C from the registers. 
+  // Write back to C from the registers.
   for (int i = 0; i < 4; ++i) {
     C[(c_row * 4 + i) * c_row_stride + c_col] = d[i];
   }

@@ -3,7 +3,7 @@ set -ex
 
 #Based on rocm-examples/HIP-Basic/assembly_to_executable/README.md
 
-# Note that we can use upstream LLVM's clang for most everything, just not the final linking step it seems. 
+# Note that we can use upstream LLVM's clang for most everything, just not the final linking step it seems.
 export LLVMDIR=$LLVM_BUILD
 export myhip=$LLVM_BUILD/bin/clang
 
@@ -28,12 +28,10 @@ $LLVMDIR/bin/clang-offload-bundler -type=o -bundle-align=4096 \
 echo "Performing the llvm-mc step"
 $LLVMDIR/bin/llvm-mc -triple host-x86_64-unknown-linux-gnu -o main_device.o hip_obj_gen.mcin --filetype=obj
 
-#The BASEDIR might not be needed, hipcc is probasbly in PATH. 
+#The BASEDIR might not be needed, hipcc is probasbly in PATH.
 # I guess this is the linking step?
 echo "Creating the final executable"
 export BASEDIR=/opt/rocm-6.4.2
 $BASEDIR/hipcc -o main main.o main_device.o
 
 echo "Done!"
-
-

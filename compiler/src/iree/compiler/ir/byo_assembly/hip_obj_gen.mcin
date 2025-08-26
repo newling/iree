@@ -6,4 +6,3 @@
   .p2align 12
 __hip_fatbin:
   .incbin "offload_bundle.hipfb"
-
