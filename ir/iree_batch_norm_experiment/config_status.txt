@@ -1,0 +1,19 @@
+Here I will try to keep track of various configurations and there throughputs. 
+
+KernelConfig.cpp:
+threadLoads = 1;
+workgroupSize = 64;
+workgroupTileSizes[dim] = tile_size * 16; // 16
+threadCounts = {16, 4};
+
+
+// gives items_per_second=1.87847k/s. For
+
+
+
+threadLoads = 4;
+workgroupSize = 64;
+workgroupTileSizes[dim] = tile_size * 64;
+threadCounts = {64, 1};
+
+items_per_second=2.15452k/s -------------> That is 372 us, out goal (tile and fuse) is 250 us. 
